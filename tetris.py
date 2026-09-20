@@ -1,14 +1,20 @@
 """NES-style Tetris clone using pygame.
 
 Install and run on Windows:
-    py -m pip install pygame
+    py -m pip install pygame mote
     py tetris.py
 
 Controls: Left/Right move, Down soft drop, Up rotate, Space hard drop,
-P pause, Esc quit. This uses original shapes/colors and no Nintendo assets.
+P pause, Esc quit. Wii Remote support works on Windows via the mote library.
 """
 import random
 import sys
+
+try:
+    from mote import Mote
+except ImportError:
+    Mote = None
+
 import pygame
 
 COLS, ROWS = 10, 20
@@ -32,6 +38,41 @@ SHAPES = {
     "T": (".T.", "TTT", "..."), "Z": ("ZZ.", ".ZZ", "..."),
 }
 KINDS = tuple(SHAPES)
+
+
+class WiimoteController:
+    def __init__(self):
+        self.device = None
+        self.connected = False
+        self.last_pressed = set()
+
+    def connect(self):
+        if Mote is None:
+            return False
+        try:
+            self.device = Mote()
+            print("Press buttons 1 and 2 on the Wii Remote...")
+            if self.device.connect():
+                self.connected = True
+                print("Wii Remote connected.")
+                return True
+        except Exception as exc:  # pragma: no cover - depends on hardware
+            print(f"Wiimote connection failed: {exc}")
+        self.connected = False
+        self.device = None
+        return False
+
+    def get_events(self):
+        if not self.connected or self.device is None:
+            return []
+        try:
+            buttons = self.device.get_buttons()
+        except Exception:  # pragma: no cover - depends on hardware
+            return []
+        current = {name for name, pressed in buttons.items() if pressed}
+        events = sorted(current - self.last_pressed)
+        self.last_pressed = current
+        return events
 
 
 def rotate(shape):
@@ -78,7 +119,6 @@ def move(board, piece, dx, dy):
 def rotate_piece(board, piece):
     old = piece.rotation
     piece.rotation = (piece.rotation + 1) % 4
-    # NES-like small wall kicks.
     for kick in (0, -1, 1, -2, 2):
         piece.x += kick
         if not blocked(board, piece):
@@ -130,6 +170,8 @@ def main():
     fall_time = 0
     paused = game_over = False
     running = True
+    wiimote = WiimoteController()
+    wiimote.connected = wiimote.connect()
 
     def spawn_next():
         nonlocal current, upcoming, game_over
@@ -140,6 +182,8 @@ def main():
     while running:
         dt = clock.tick(60)
         fall_time += dt
+
+        wiimote_events = wiimote.get_events() if wiimote.connected else []
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -172,6 +216,36 @@ def main():
                             lines += count
                             level = lines // 10
                         spawn_next()
+
+        if wiimote.connected and not paused and not game_over:
+            for key in wiimote_events:
+                if key == "LEFT":
+                    move(board, current, -1, 0)
+                elif key == "RIGHT":
+                    move(board, current, 1, 0)
+                elif key == "DOWN":
+                    if move(board, current, 0, 1):
+                        score += 1
+                elif key == "UP":
+                    rotate_piece(board, current)
+                elif key == "A":
+                    distance = 0
+                    while move(board, current, 0, 1):
+                        distance += 1
+                    score += distance * 2
+                    lock(board, current)
+                    board, count = clear_lines(board)
+                    if count:
+                        score += (0, 40, 100, 300, 1200)[count] * (level + 1)
+                        lines += count
+                        level = lines // 10
+                    spawn_next()
+                elif key == "B":
+                    rotate_piece(board, current)
+                elif key == "PLUS":
+                    paused = not paused
+                elif key == "HOME":
+                    running = False
 
         if not paused and not game_over:
             interval = max(70, 800 - level * 60)
@@ -213,6 +287,8 @@ def main():
         text(screen, font, "UP      ROTATE", PANEL_X, 378, DIM)
         text(screen, font, "SPACE   DROP", PANEL_X, 406, DIM)
         text(screen, font, "P       PAUSE", PANEL_X, 434, DIM)
+        if wiimote.connected:
+            text(screen, font, "WII REMOTE OK", PANEL_X, 465, (100, 220, 120))
         if paused:
             text(screen, title_font, "PAUSED", BOARD_X + 70, BOARD_Y + 260)
         elif game_over:
